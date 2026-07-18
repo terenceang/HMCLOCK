@@ -825,19 +825,23 @@ static void epd_wait_timer(void)
 
 void QR_draw()
 {
+	char tbuf[16];
+
 	// 此处添加QR码绘制逻辑
 	epd_hw_open();
 
 	epd_update_mode(UPDATE_FULL);
 
 	memset(fb_bw, 0xff, scr_h*line_bytes);
-	memset(fb_rr, 0x00, scr_h*line_bytes);	
+	memset(fb_rr, 0x00, scr_h*line_bytes);
 
 	draw_qr_code(5, 5, 3, QR_31x31);
 	draw_text(100, 5,"Bluetooth", BLACK);
-	draw_text(100, 20, "DCLK-", BLACK);
-	draw_text(170,20,bt_id,BLACK);
-		
+	// 设备名一次性绘制为单个连续字符串（DCLK-XXYYZZ），避免拆成两次draw_text
+	// 在固定x坐标下产生视觉断行。
+	sprintf(tbuf, "DCLK-%s", bt_id);
+	draw_text(100, 20, tbuf, BLACK);
+
 	draw_text(110,40,"-------------",BLACK);
 	
 	draw_text(100, 60, "Scan the QR code", BLACK);
