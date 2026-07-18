@@ -470,8 +470,18 @@ static int firm_addr;
 static int firm_size;
 static int firm_flag;
 
+// Running CRC32 over the OTA payload as it's received, checked against the
+// CRC the client embedded in the image header (page 0, offset 8) before we
+// ever reset into the new image. ota_crc_len tracks how many *real* firmware
+// bytes (excluding the 64-byte header prologue and any trailing 0xff pad on
+// the last page) have been folded into ota_crc so far.
+static u32 ota_crc;
+static u32 ota_crc_expect;
+static int ota_crc_len;
+static int ota_crc_valid;
 
-int ota_handle(u8 *buf)
+
+int ota_handle(u8 *buf, int len)
 {
 	u8 *pbuf = ota_buf;
 	u32 *p32 = (u32*)pbuf;
@@ -481,7 +491,11 @@ int ota_handle(u8 *buf)
 	if(buf[0]==0xa0){
 		// 升级开始
 		// 先擦除非活动固件
+		if(len<4) return -1;
 		ota_state = 1;
+		ota_crc = 0;
+		ota_crc_len = 0;
+		ota_crc_valid = 0;
 
 		firm_size = *(u16*)(buf+2);
 		printk("firm_size: %04x (%d)\n", firm_size, firm_size);
@@ -520,18 +534,35 @@ int ota_handle(u8 *buf)
 		arch_set_sleep_mode(ARCH_SLEEP_OFF);
 	}else if(buf[0]==0xa2){
 		// 传输page的前128字节
+		if(len<136) return -1;
 		memcpy(ota_buf, buf+8, 128);
 	}else if(buf[0]==0xa3){
 		// 传输page的后128字节
+		if(len<136) return -1;
 		memcpy(ota_buf+128, buf+8, 128);
+
+		// Page 0 carries a 64-byte header prologue (magic/size/crc/version)
+		// before the real firmware bytes start; later pages are pure data.
+		int page_off = (ota_state==1) ? 64 : 0;
+		int page_cap = 256 - page_off;
+		int avail = firm_size - ota_crc_len;
+		if(avail>page_cap) avail = page_cap;
+		if(avail<0) avail = 0;
+
 		if(ota_state==1){
 			ota_buf[3] = firm_flag;
+			ota_crc_expect = *(u32*)(ota_buf+8);
+			ota_crc_valid = 1;
 			printk("Firm Header: %08x %08x %08x %08x\n",
 				*(u32*)(ota_buf+0),
 				*(u32*)(ota_buf+4),
 				*(u32*)(ota_buf+8),
 				*(u32*)(ota_buf+28)
 			);
+		}
+		if(avail>0){
+			ota_crc = crc32(ota_crc, ota_buf+page_off, avail);
+			ota_crc_len += avail;
 		}
 
 		int addr = firm_addr+(ota_state-1)*256;
@@ -540,10 +571,32 @@ int ota_handle(u8 *buf)
 
 		ota_state += 1;
 	}else if(buf[0]==0xa4){
+		// Only reset into the new image if the payload we actually wrote
+		// matches the CRC the client embedded in the header. This is an
+		// unauthenticated BLE-writable path, so a truncated/corrupted
+		// transfer must not be allowed to become the boot image.
+		int crc_ok = ota_crc_valid && (ota_crc_len==firm_size) && (ota_crc==ota_crc_expect);
+
+		if(!crc_ok){
+			printk("OTA CRC check FAILED (got %08x/%d bytes, expected %08x/%d bytes) - aborting update\n",
+				ota_crc, ota_crc_len, ota_crc_expect, firm_size);
+			// Invalidate the new image's header magic so a stray reset
+			// (watchdog, power blip) can't later boot into it based on
+			// its already-written generation flag -- writing zeros over
+			// already-programmed flash needs no re-erase.
+			u8 zero[4] = {0, 0, 0, 0};
+			sf_page_write(firm_addr, zero, 4);
+			sf_wait();
+		}
+
 		ota_state = 0;
+		ota_crc_valid = 0;
 		arch_set_sleep_mode(ARCH_EXT_SLEEP_ON);
-		// Remap addres 0x00 to ROM and force execution
-		SetWord16(SYS_CTRL_REG, (GetWord16(SYS_CTRL_REG) & ~REMAP_ADR0) | SW_RESET );
+
+		if(crc_ok){
+			// Remap addres 0x00 to ROM and force execution
+			SetWord16(SYS_CTRL_REG, (GetWord16(SYS_CTRL_REG) & ~REMAP_ADR0) | SW_RESET );
+		}
 	}
 
 	return 0;

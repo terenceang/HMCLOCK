@@ -429,16 +429,41 @@ int clock_update(int inc)
 
 void clock_set(uint8_t *buf)
 {
-	year   = buf[1] + buf[2]*256;
-	month  = buf[3];
-	date   = buf[4]-1;
-	hour   = buf[5];
-	minute = buf[6];
-	second = buf[7];
-	wday   = buf[8];
-	l_year = buf[9];
-	l_month= buf[10];
-	l_date = buf[11]-1;
+	int new_year   = buf[1] + buf[2]*256;
+	int new_month  = buf[3];
+	int new_date   = buf[4]-1;
+	int new_hour   = buf[5];
+	int new_minute = buf[6];
+	int new_second = buf[7];
+	int new_wday   = buf[8];
+	int new_l_year = buf[9];
+	int new_l_month= buf[10];
+	int new_l_date = buf[11]-1;
+
+	// Reject out-of-range values before they can reach array-indexed
+	// lookups downstream (lunar_year_info[32] in get_lunar_mdays(),
+	// lday_str_lo[13]/lday_str_hi[5] in ldate_str()). This data comes
+	// straight from an unauthenticated BLE write.
+	if(new_month<0 || new_month>11)   return;
+	if(new_date<0  || new_date>30)    return;
+	if(new_hour<0  || new_hour>23)    return;
+	if(new_minute<0 || new_minute>59) return;
+	if(new_second<0 || new_second>59) return;
+	if(new_wday<0  || new_wday>6)     return;
+	if(new_l_year<0 || new_l_year>=32) return;
+	if((new_l_month&0x7f)>11)         return;
+	if(new_l_date<0 || new_l_date>29) return;
+
+	year   = new_year;
+	month  = new_month;
+	date   = new_date;
+	hour   = new_hour;
+	minute = new_minute;
+	second = new_second;
+	wday   = new_wday;
+	l_year = new_l_year;
+	l_month= new_l_month;
+	l_date = new_l_date;
 
 	get_holiday();
 
@@ -976,13 +1001,19 @@ void user_svc1_ctrl_wr_ind_handler(ke_msg_id_t const msgid,
  * - 0x91: 时钟设置命令
  * - 0xA0及以上: OTA升级相关命令
  */
-void user_svc1_long_val_wr_ind_handler(ke_msg_id_t const msgid, 
-                                      struct custs1_val_write_ind const *param, 
-                                      ke_task_id_t const dest_id, 
+void user_svc1_long_val_wr_ind_handler(ke_msg_id_t const msgid,
+                                      struct custs1_val_write_ind const *param,
+                                      ke_task_id_t const dest_id,
                                       ke_task_id_t const src_id)
 {
+	int len = param->length;
+
+	if(len<1)
+		return;
+
 	if(param->value[0]==0x91){
-		// 设置时钟
+		// 设置时钟 (至少需要buf[1..11]，共12字节)
+		if(len<12) return;
 		clock_set((uint8_t*)param->value);
 		// 更新显示（带蓝牙图标，快速更新模式）
 		clock_draw(DRAW_BT|UPDATE_FAST);
@@ -993,6 +1024,8 @@ void user_svc1_long_val_wr_ind_handler(ke_msg_id_t const msgid,
 		h24_format = !h24_format;
 		clock_draw(DRAW_BT|UPDATE_FAST);
 	}else if(param->value[0]==0x92){
+		// 时间校准 (至少需要buf[1..2]，共3字节)
+		if(len<3) return;
 		int diff_sec;
 		diff_sec  = param->value[1];
 		diff_sec |= param->value[2]<<8;
@@ -1001,10 +1034,8 @@ void user_svc1_long_val_wr_ind_handler(ke_msg_id_t const msgid,
 		clock_fixup_set(diff_sec, cal_minute);
 		cal_minute = 0;
 	}else if(param->value[0]>=0xa0){
-		ota_handle((u8*)param->value);
-	}else if(param->value[0]>=0xa0){
 		// 处理OTA升级命令
-		ota_handle((u8*)param->value);
+		ota_handle((u8*)param->value, len);
     }
 }
 

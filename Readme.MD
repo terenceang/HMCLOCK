@@ -1,102 +1,133 @@
-# 盒马时钟
+# Hema ESL Clock
+
+This is a fork of the original [HMCLOCK](https://github.com/tpunix/HMCLOCK) project by [tpunix](https://github.com/tpunix).
 
 ---
 
-![设备展示](./images/device.png)
+![Device Showcase](./images/device.png)
 
-## 项目简介
+## Project Introduction
 
-本项目利用超市淘汰下来的 **盒马价签** 硬件，实现一个功能简单但实用的电子时钟，具有如下功能：
+This project utilizes discarded **Hema Electronic Shelf Label (ESL)** hardware from supermarkets to implement a simple yet practical electronic clock with the following features:
 
-* ✅ 显示时间与日期
-* ✅ 显示农历、节气与节假日
-* ✅ 显示电池电量
-* ✅ 蓝牙对时
-* ✅ 时间校准
-* ✅ 蓝牙 OTA 更新
+* ✅ Display date and time
+* ✅ Display Lunar calendar, Solar terms, and traditional holidays
+* ✅ Display battery level
+* ✅ Bluetooth time synchronization
+* ✅ Time calibration
+* ✅ Bluetooth OTA firmware update
 
 ---
 
-## 编译与烧写
+## Changelog
 
-请先下载 DA14585 的 [SDK](https://www.renesas.com/en/document/swo/sdk60221401-da1453x-da145856 "SDK") 包，目前使用 **6.0.22.1401** 版本。
+### 0xA50f0008
 
-1. 将本项目放置在：
+* Removed a dead/unreachable duplicate branch in the BLE long-value write dispatcher.
+* Added range validation on BLE-set clock/lunar-date fields (`0x91`), preventing out-of-bounds array reads from a malformed write before they could reach the lunar calendar lookup tables.
+* Added minimum-length checks on incoming BLE writes before trusting fixed-offset fields, for the clock-set, calibration, and OTA commands.
+* Removed the unused, already-diverged `spi_flash_hwctl.c` duplicate flash/OTA driver (it wasn't part of any build target and was missing a reset call its live counterpart had).
+* OTA updates now verify a CRC32 of the received firmware image before resetting into it. A failed check aborts the update and invalidates the new image's header so a stray reset (watchdog, power blip) can't boot into a partially-written image.
+
+---
+
+## Compilation and Flashing
+
+Please download the DA14585 [SDK](https://www.renesas.com/en/document/swo/sdk60221401-da1453x-da145856 "SDK"), currently using version **6.0.22.1401**.
+
+1. Place this project inside:
 
    ```
    SDK_PATH/projects/target_apps/ble_examples
    ```
 
-2. 使用Keil打开项目进行编译。
+2. Open the project with Keil MDK to compile.
 
-3. 编译完成后：
+3. Once compiled:
 
-   * **调试模式运行一次**，固件会自动写入 Flash；
-   * 或者使用 **SmartSnippets Toolbox** 将固件下载到 RAM 运行一次也可。
+   * **Run in debug mode once**, and the firmware will be automatically written to Flash;
+   * Or use the **SmartSnippets Toolbox** to download the firmware to RAM and run it once;
+   * Or flash it with **OpenOCD** (see below) if you're using a CMSIS-DAP/ST-Link probe instead of a J-Link.
 
----
+### Flashing with OpenOCD
 
-## 蓝牙对时
+The DA14585/586 has no internal flash — firmware normally runs from RAM, either loaded by a debugger or copied there by the ROM bootloader from external SPI flash/OTP. `Keil_5\openocd_da14585.cfg` drives this RAM-load-and-run path over SWD using a CMSIS-DAP-compatible probe (tested with the same probe configured under Keil's `CMSIS_AGDI` debug driver in this project).
 
-项目内置页面提供 **Web Bluetooth** 功能，可用于手动对时：
+Install OpenOCD (e.g. `winget install xpack-dev-tools.openocd-xpack`), then from the `Keil_5` directory:
 
-* 固件每隔 **整十分钟** 广播一次，持续 **30秒**；
-* 广播状态下，屏幕显示蓝牙图标与设备名后缀；
-* 打开页面点击 “连接”，选中设备后，按 “同步时间” 即可完成同步。
+```
+openocd -f openocd_da14585.cfg -c "ram_load_run out_DA14585/Objects/ble_app_peripheral_585.axf" -c shutdown
+```
 
-## 时间校准
+This halts the core, writes the `.axf` into RAM at `0x07fc0000`, sets `SP`/`PC` from the vector table, and resumes — equivalent to Keil's RAM-debug flow. As with that flow, the app's own first-boot logic writes itself to external SPI flash, so it persists across power cycles without any explicit flash step.
 
-根据观察，默认状态下，时钟大概每天会快两秒左右。通过微调定时器的间隔，可以让时钟更精确。
-在时间同步后，间隔两到三周，做两次校准，基本上就可以让时钟精准运行了。
-
-* 设备链接后，按"时间校准"按钮，然后等待一分钟左右即可。
-* 校准后请立即做一次时间同步。
-
-![控制台](./images/ctrl.png)
-
-首次上电会打开配对页面，扫码跳转网页可以进行配对。
-
-![配对提示](./images/peiwang.png)
+Notes:
+* OpenOCD has no flash driver for this chip's external SPI flash/OTP, so `program`/`flash write_image` won't work here — only the RAM-load path does.
+* Use a plain `reset halt`, not a hardware reset + delay: a core-only reset (`SYSRESETREQ`) does **not** re-trigger the ROM's flash-to-RAM boot copy on this chip (that only happens on power-on-reset), so there's no race to wait out. Adding a delay before halting risks catching the core mid-execution and triggering a HardFault.
 
 ---
 
-## 外壳装配
+## Bluetooth Time Synchronization
 
-外壳文件存储在3D目录文件下，采用推拉盖结构，推荐使用树脂打印。
+The project's built-in web page provides **Web Bluetooth** functionality for manual time synchronization:
+
+* The firmware broadcasts every **10 minutes on the dot**, lasting for **30 seconds**;
+* During broadcasting, the screen displays a Bluetooth icon and the device name suffix;
+* Open the web page, click "Connect", select your device, and click "Sync Time" to complete the synchronization.
+
+## Time Calibration
+
+According to observations, by default, the clock runs about two seconds fast per day. The accuracy can be improved by fine-tuning the timer interval.
+After syncing the time, performing two calibrations 2 to 3 weeks apart will keep the clock running very accurately.
+
+* Once the device is connected, click the "Time Calibration" button and wait about one minute.
+* Perform a time synchronization immediately after calibration.
+
+![Control Panel](./images/ctrl.png)
+
+When powered on for the first time, it will show a pairing page. Scan the QR code to open the web page and pair.
+
+![Pairing Prompt](./images/peiwang.png)
 
 ---
 
-## 关于盒马价签
+## Case Assembly
 
-本项目使用到的盒马价签屏幕类型如下：
+Case design files are stored in the `3D/` directory. It features a sliding lid design, and 3D printing with resin is recommended.
 
-| 尺寸     | 颜色  | 屏幕连接方式 | 型号                | 主控芯片              | 分辨率     | 拆解难度 | LED | 测试点文件           |
+---
+
+## About Hema ESL (Electronic Shelf Label)
+
+The types of Hema ESL screens used in this project are listed below:
+
+| Size | Colors | Interface Type | Model | Main MCU | Resolution | Disassembly Difficulty | LED | Pinout File |
 | ------ | --- | ------ | ----------------- | ----------------- | ------- | ---- | --- | --------------- |
-| 2.13 寸 | 黑白  | 焊接     | HINK-E0213A41/A55 | IL3897 / SSD1675B | 212×104 | 困难   | 有   | pinout_1/0.xlsx |
-| 2.13 寸 | 黑白  | 插座     | OPM021B1          | IL3895 / SSD1673A | 250×122 | 困难   | 有   | pinout_0.xlsx   |
-| 2.13 寸 | 黑白红 | 焊接     | HINK-E0213A67     | IL3897            | 250×122 | 困难   | 三色  | pinout_0.xlsx   |
-| 2.9 寸  | 黑白红 | 插座     | HINK-E029A10      | IL3897            | 296×128 | 容易   | 有   | pinout_0.xlsx   |
+| 2.13" | Black/White | Soldered | HINK-E0213A41/A55 | IL3897 / SSD1675B | 212×104 | Hard | Yes | pinout_1/0.xlsx |
+| 2.13" | Black/White | Socket | OPM021B1 | IL3895 / SSD1673A | 250×122 | Hard | Yes | pinout_0.xlsx |
+| 2.13" | Black/White/Red | Soldered | HINK-E0213A67 | IL3897 | 250×122 | Hard | 3-Color | pinout_0.xlsx |
+| 2.9" | Black/White/Red | Socket | HINK-E029A10 | IL3897 | 296×128 | Easy | Yes | pinout_0.xlsx |
 
 
 ---
 
-### Flash存储信息
+### Flash Storage Layout
 
-#### 屏幕引脚配置（地址 `0x39000`）
+#### Screen Pin Configuration (Address `0x39000`)
 
-示例：
+Example:
 
 ```
 09 01 FF FF FF FF FF FF 21 22 10  01  20  07  11  23
                         CS ?? RST CLK SDI DC BUSY PWR
 ```
 
-* 第一个字节 `09`：屏幕类型
-* 第二个字节 `01`：引脚配置启用标志（非 `01` 表示无效）
+* First byte `09`: Screen Type
+* Second byte `01`: Pin configuration enable flag (any value other than `01` is invalid)
 
-#### 屏幕分辨率等信息（地址 `0x3a000`）
+#### Screen Resolution and Info (Address `0x3a000`)
 
-示例：
+Example:
 
 ```
 00 25 00 00 92 fa a8 fe 00 01 80 00 28 01 04 00
@@ -105,10 +136,10 @@
 
 ---
 
-## 其他说明
+## Additional Notes
 
-* 原版价签固件存放在 Flash 的 SUOTA 区域；
-* 大多数价签使用 OTP 启动器，但会从 Flash 继续加载固件；
-* Flash 中包含屏幕和引脚配置，因此新固件无需硬编码这些信息；
-* 原生固件无法被蓝牙扫描到，因此难以通过 OTA 更新；
-* 价签多数电池电量不足，因此建议拆机替换供电。
+* The original ESL firmware is stored in the SUOTA section of Flash;
+* Most ESLs use an OTP bootloader but will continue to load firmware from Flash;
+* Flash contains the screen and pin configuration, so the new firmware does not need to hardcode this information;
+* The stock firmware cannot be scanned via Bluetooth, making it difficult to update via OTA directly without initially flashing;
+* Most ESL batteries are nearly depleted, so it is recommended to disassemble and replace the power supply.
