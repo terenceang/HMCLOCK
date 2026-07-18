@@ -46,7 +46,7 @@
 			try {
 				console.log('请求设备...');
 				device = await navigator.bluetooth.requestDevice({
-					filters: [{ namePrefix: "DLG-CLOCK"}]
+					filters: [{ namePrefix: "DCLK"}]
 					, optionalServices: [ 0xff00 ]
 				});
 				console.log('device: ', device.name);
